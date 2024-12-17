@@ -1,0 +1,2224 @@
+---
+title: "IVoCC PABLO Analysis"
+author: "Adam Chan"
+date: "15/02/2023"
+output: 
+    html_document:
+        number_sections: yes
+        self_contained: yes
+        theme: lumen
+        toc: yes
+        toc_depth: 3
+        toc_float: yes
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+.libPaths("/dora/nobackup/biostat/Rpackages/v4")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/dskh/nobackup/alexq/nadav")
+# knitr::opts_knit$set(root.dir = "C:\\Users\\acha5354\\Desktop\\New Folder\\{SW}\\PhD\\Projects\\200518 - Mass Cytometry Analyses")
+
+# setwd("/dskh/nobackup/adamc/Projects/200518-MassCytometryAnalyses")
+```
+
+# Data
+## Data Loading
+
+```{r}
+suppressPackageStartupMessages({
+    library(CATALYST)
+    
+    library(flowCore)
+    library(ggplot2)
+    library(SingleCellExperiment)
+    
+    library(DT)
+    
+    library(dplyr)
+    library(tidyr)
+    library(broom)
+    library(stringr)
+    library(janitor)
+    library(readxl)
+    
+    library(ggiraph)
+    library(viridis)
+})
+
+
+data_folder <- "/dskh/nobackup/alexq/nadav"
+
+create_dt <- function(x){
+  DT::datatable(x,
+                extensions = 'Buttons',
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                               lengthMenu = list(c(10,25,50,-1),
+                                                 c(10,25,50,"All"))))
+}
+```
+
+### Extracting gating from wsp
+
+```{r, eval=FALSE}
+library(CytoML)
+library(flowWorkspace)
+
+flowWsDataPath <- file.path(data_folder, "data")
+wsp_files <- list.files(flowWsDataPath, pattern = ".wsp")
+fcs_folders <- file.path(flowWsDataPath, 
+                         c("Debarcoded fcs1", "Debarcoded FCS2", 
+                           "Debarcoded FCS3", "Debarcoded FCS4",
+                           "Debarcoded fcs1 2024", "Debarcoded fcs 2 2024",
+                           "Debarcoded fcs 3 2024", "Debarcoded fcs 4 2024",
+                           "Debarcoded fcs 5 2024"))
+
+#' Fixing fcs with SampleID channel
+#' ----------------
+# library(cytoqc)
+# rawfiles <- list.files(fcs_folders[9], ".fcs", recursive = TRUE, full.names = TRUE)
+# cqc_data <- cqc_load_fcs(rawfiles)
+# 
+# check_res <- cqc_check(cqc_data, type = "channel")
+# check_res
+# 
+# match_res <- cqc_match(check_res, ref = 2)
+# match_res
+# 
+# for(i in 1:length(cqc_data)) {
+#   if(ncol(cqc_data[[i]]) == 65){
+#     print(rawfiles[i])
+#     
+#     fcs_file <- read.FCS(
+#       file.path(rawfiles[i]),
+#       column.pattern = "SampleID", # Remove sample ID as only some have it
+#       invert.pattern = TRUE,
+#       truncate_max_range = FALSE
+#     )
+#     
+#     write.FCS(
+#       fcs_file,
+#       file.path(rawfiles[i])
+#     )
+#     
+#   }
+# }
+
+# fcs_file <- read.FCS(
+#     # "data/Debarcoded fcs1 2024/HC233/HC233_CD45_108_LJM_019_TP2_TP10_concat_1.fcs",
+#     # "data/Debarcoded fcs1 2024/HC233/HC233_CD45_108_SCH_003_d30_SCH_015_d90_concat_1.fcs",
+#     # "data/Debarcoded fcs1 2024/Patients/LJM_019_TP2_concat_1.fcs",
+#     # "data/Debarcoded fcs1 2024/Patients/LJM_019_TP10_concat_1.fcs",
+#     # "data/Debarcoded fcs1 2024/Patients/SCH_003_d30_concat_1.fcs",
+#     "data/Debarcoded fcs1 2024/Patients/SCH_015_d90_concat_1.fcs",
+#     "/dskh/nobackup/alexq/nadav/data/Debarcoded fcs 2 2024/Patients/YY_003_TP6_12_concat_1.fcs",
+#     column.pattern = "SampleID", # Remove sample ID as only some have it
+#     invert.pattern = TRUE,
+#     truncate_max_range = FALSE
+# )
+# 
+# write.FCS(
+#     fcs_file,
+#     # "data/Debarcoded fcs1 2024/HC233/HC233_CD45_108_SCH_003_d30_SCH_015_d90_concat_1.fcs"
+#     # "data/Debarcoded fcs1 2024/Patients/LJM_019_TP2_concat_1.fcs"
+#     # "data/Debarcoded fcs1 2024/Patients/LJM_019_TP10_concat_1.fcs"
+#     # "data/Debarcoded fcs1 2024/Patients/SCH_003_d30_concat_1.fcs"
+#     "data/Debarcoded fcs1 2024/Patients/SCH_015_d90_concat_1.fcs"
+# )
+
+
+#' ======================
+#' Get the workspace files and label cells by gating
+#' ----------------------
+
+priority_cell_paths = c()
+
+getGatedCells <- function(ws_file,
+                          ws_sample_group_name,
+                          fcs_files_loc) {
+  # Parse workspace file
+  ws <- CytoML::open_flowjo_xml(ws_file)
+  # Get gating set
+  gs <- CytoML::flowjo_to_gatingset(ws, 
+                                  name = ws_sample_group_name, 
+                                  path = fcs_files_loc)
+  # Get list of files
+  sample_list <- sampleNames(gs)
+  # # Vector of fcs file sizes
+  # sample_num <- as.numeric(unlist(lapply(strsplit(sample_list, "_"), 
+  #                                        function(x) x[length(x)])))
+  # names(sample_num) <- unlist(lapply(strsplit(sample_list, "_"), 
+  #                                    function(x) paste(x[-length(x)], collapse = "_")))
+  # Get annotations for each cell
+  cellTypes_list_gs1 <- list()
+  cellTypes_df_list_gs1 <- list()
+  
+  pb <- txtProgressBar(min = 0, max = length(sample_list), style = 3)
+  for(s in 1:length(sample_list)) { # iterate through each sample
+    leaf_nodes <- gs_get_pop_paths(gs[[s]], order="bfs")
+    cellTypes_list_sample <- list()
+    for (ln in leaf_nodes) { # iterate through each node
+      cellTypes <- character()
+      cellTypes<- gh_pop_get_indices(gs[[s]], ln)
+      cellTypes_list_sample[[ln]] <- cellTypes
+    }
+    cellTypes_list_sample <- do.call(cbind, cellTypes_list_sample)
+    # Unprioritise cell subset annotations
+    idx <- which(colnames(cellTypes_list_sample) %in% c("root", "/singlets", "/first part", "/CD34+ singlets"))
+    # Prioritise cell subset annotations
+    idx_p <- which(colnames(cellTypes_list_sample) %in% priority_cell_paths)
+    idx <- c(idx, seq_len(ncol(cellTypes_list_sample))[-c(idx,idx_p)], idx_p)
+    # Pick the furthest classified annotation
+    cellTypes <- apply(cellTypes_list_sample[, idx], 1, function(x) {
+      res <- names(which(x))
+      res[length(res)]
+      # return(res)
+    })
+    cellTypes_list_gs1[[sample_list[s]]] <- cellTypes
+    cellTypes_df_list_gs1[[sample_list[s]]] <- cellTypes_list_sample[, idx]
+    
+    setTxtProgressBar(pb, s)
+  }
+  close(pb)
+  
+  # A list of all the cell labels, sorted by fcs file
+  names(cellTypes_list_gs1) <- unlist(lapply(strsplit(names(cellTypes_list_gs1), "_"), 
+                                             function(x) paste(x[-length(x)], collapse = "_")))
+  names(cellTypes_df_list_gs1) <- names(cellTypes_list_gs1)
+  
+  cell_type_df <- lapply(seq_along(cellTypes_list_gs1), function(i) {
+    data.frame(mg_cell_path=cellTypes_list_gs1[[i]], 
+               cell_index=1:length(cellTypes_list_gs1[[i]]),
+               fcs_name=names(cellTypes_list_gs1)[i])
+    }) %>% 
+    bind_rows() %>%
+    mutate(wsp_name=unlist(lapply(strsplit(ws_file, "/"), function(x) x[length(x)])))
+  
+  cell_type_df_full <- lapply(seq_along(cellTypes_list_gs1), function(i) {
+    data.frame(mg_cell_path=cellTypes_list_gs1[[i]], 
+               cell_index=1:length(cellTypes_list_gs1[[i]]),
+               fcs_name=names(cellTypes_list_gs1)[i]) %>% 
+      bind_cols(
+          cellTypes_df_list_gs1[[i]]
+      ) 
+    })%>%
+    bind_rows() %>%
+    mutate(wsp_name=unlist(lapply(strsplit(ws_file, "/"), function(x) x[length(x)])))
+  
+  return(list(cell_type_df=cell_type_df,
+              cell_type_df_full=cell_type_df_full,
+              leaf_nodes=leaf_nodes))
+}
+
+
+# # Get all leaf nodes and put into excel 
+
+mg_list_mha <- getGatedCells(
+  ws_file = file.path("/dskh/nobackup/alexq/nadav/mha_data/MHA_IVoCC_002/BG_20210618_CB_NM.wsp"),
+  fcs_files_loc = file.path("/dskh/nobackup/alexq/nadav/mha_data/MHA_IVoCC_002/FCS"),
+  ws_sample_group_name = "All Samples"
+)
+
+wsp_files <- wsp_files[c(2,7,8,9,1,3,4,5,6)]
+
+mg_list <- lapply(1:9, 
+                  function(x) getGatedCells(
+                      ws_file = file.path(flowWsDataPath, wsp_files[x]),
+                      fcs_files_loc = fcs_folders[x],
+                      ws_sample_group_name = "All Samples"
+                      )
+                  )
+
+saveRDS(
+    mg_list,
+    file=file.path(data_folder, "data/cell_type_mg_list_b4.RDS")
+)
+
+saveRDS(
+    mg_list_mha,
+    file=file.path(data_folder, "data/cell_type_mg_list_mha.RDS")
+)
+```
+
+### Creating SCE
+
+#### Creating SCE for 2022 Batch
+
+```{r, eval=FALSE}
+#' ==================================================
+#' Read in data
+#' --------------------------------------------------
+fcsFiles <- list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = TRUE) %>%
+    .[!grepl("Don't USE",.)]
+
+fcsFiles <- fcsFiles[!grepl("2024", fcsFiles)]
+
+fcs_raw <- read.flowSet(fcsFiles, 
+                        transformation = FALSE, 
+                        truncate_max_range = FALSE)#,
+                        # column.pattern = "SampleID", # Remove sample ID as only some have it
+                        # invert.pattern = TRUE)
+
+### Get marker information ----------------------------------
+# pregating_channels <- c("Bead", "DNA1", "DNA2", "Dead", "Cell_length")
+lineage_channels <- c("CD11c","CD56",
+                      "CD8a",#"CD8A",
+                      "CD57","CD27","CD19","CD45RA",
+                      "CD4","KLRG1","CD45RO","CD31",
+                      "CD194_CCR4",#"CD194 (CCR4)",
+                      "CD197_CCR7",#"CD197 (CCR7)",
+                      "CD14","APC","CD16","IgD","Ki67",
+                      "CD25","CD3","CD38",
+                      "IntB7",#"integrin beta7",
+                      "CD127")
+
+# Base the panel off the batch 1 .fcs
+fcs_panel <- pData(parameters(fcs_raw[[which(fcsFiles == "/dskh/nobackup/alexq/nadav/data/Debarcoded fcs1/HC229/HC299_CHW_002_d180_CD45_104.fcs")]])) %>%
+  select(name, desc) %>%
+    mutate(marker = gsub("^[^_]+_", "", desc)) %>%
+    mutate(marker_class = ifelse(marker %in% lineage_channels,
+                                "type", ifelse(is.na(marker),
+                                                  "none",
+                                                  "state")))
+
+samp_df <- data.frame(file_name_full=list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = FALSE)) %>%
+    filter(!grepl("Don't USE",file_name_full)) %>%
+    # mutate(batch = strsplit(file_name_full, split = "/")[[1]][1]) %>%
+    tidyr::separate_wider_delim(file_name_full, delim = "/", names = c("batch", "sample_type", "file_name")) %>%
+    rowwise() %>% 
+    mutate(pat_id = ifelse(sample_type == "HC229" & batch == "Debarcoded fcs1",
+                         paste0(strsplit(file_name, split="_")[[1]][2:3], collapse="_"),
+                    ifelse(sample_type == "HC229" | sample_type == "HC233",
+                         paste0(strsplit(file_name, split="_")[[1]][4:5], collapse="_"),
+                         paste0(strsplit(file_name, split="_")[[1]][1:2], collapse="_")))) %>%
+    ungroup()
+
+saveRDS(
+    lapply(mg_list, function(dat) {
+        dat$cell_type_df_full %>%
+            left_join(samp_df,
+                    by=c("fcs_name"="file_name"))
+                    }) %>%
+        bind_rows(),
+    file=file.path(data_folder, "data/cell_type_full_df_b4.RDS")
+)
+
+all_cells_df <- readRDS(file.path(data_folder, "data/cell_type_full_df_b4.RDS"))
+
+samp_df[!grepl("2024", samp_df$batch),]
+# Convert to SingleCellExperiment
+sce <- prepData(x=fcs_raw, 
+                panel=fcs_panel,
+                md=samp_df[!grepl("2024", samp_df$batch),],
+                cofactor = 5,
+                panel_cols = list(channel="name",
+                                  antigen="desc"),
+                md_cols = list(file="file_name",
+                               id="pat_id",
+                               factors=c("sample_type", "file_name"))
+)
+
+# Edit colData
+colData <- colData(sce)
+colData$file_name <- as.character(colData$file_name)
+
+### Join wsp cell types ----------------------------------
+colData$mg_cell_path <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df %>%
+              select(cell_index, fcs_name, mg_cell_path),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  dplyr::pull(mg_cell_path)
+
+# Add batch information, taken from the workspace name
+colData$batch <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df %>%
+              select(cell_index, fcs_name, wsp_name),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  pull(wsp_name) %>%
+  readr::parse_number()
+
+# Add indexes for cells
+colData$cell_index <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+    pull(cell_index)
+
+colData(sce) <- colData
+
+# Switch the values for "156Gd_PE" "175Lu_CD279_PD1" for batch 2
+sce_exprs_new = assay(sce, "exprs")
+sce_exprs_new[c(which(rownames(sce)=="156Gd_CD279_PD1"), which(rownames(sce)=="175Lu_PE")), which(colData$batch==2)] <-
+    sce_exprs_new[c(which(rownames(sce)=="175Lu_PE"), which(rownames(sce)=="156Gd_CD279_PD1")), which(colData$batch==2)]
+
+assay(sce, "exprs") <- sce_exprs_new
+
+saveRDS(sce,
+        file=file.path(data_folder, "data/sce_b4.rds"))
+
+```
+
+#### Creating SCE for 2024 Batch
+
+```{r, eval=FALSE}
+#' ==================================================
+#' Read in data
+#' --------------------------------------------------
+fcsFiles <- list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = TRUE) %>%
+    .[!grepl("Don't USE",.)]
+
+fcsFiles <- fcsFiles[grepl("2024", fcsFiles)]
+
+fcs_raw <- read.flowSet(fcsFiles, 
+                        transformation = FALSE, 
+                        truncate_max_range = FALSE)#,
+                        # column.pattern = "SampleID", # Remove sample ID as only some have it
+                        # invert.pattern = TRUE)
+
+### Get marker information ----------------------------------
+# pregating_channels <- c("Bead", "DNA1", "DNA2", "Dead", "Cell_length")
+lineage_channels <- c("CD11c","CD56",
+                      "CD8a",#"CD8A",
+                      "CD57","CD27","CD19","CD45RA",
+                      "CD4","KLRG1","CD45RO","CD31",
+                      "CD194_CCR4",#"CD194 (CCR4)",
+                      "CD197_CCR7",#"CD197 (CCR7)",
+                      "CD14","HLADR_APC","CD16","IgD","Ki67",
+                      "CD25","CD3","CD38",
+                      "IntegrinB7",#"integrin beta7", 
+                      "CD127")
+
+# Base the panel off the batch 1 .fcs
+fcs_panel <- pData(parameters(fcs_raw[[which(fcsFiles == "/dskh/nobackup/alexq/nadav/data/Debarcoded fcs1 2024/HC233/HC233_CD45_108_CHW_001_d90_180.fcs")]])) %>%
+  select(name, desc) %>%
+    mutate(marker = gsub("^[^_]+_", "", desc)) %>%
+    mutate(marker_class = ifelse(marker %in% lineage_channels,
+                                "type", ifelse(is.na(marker),
+                                                  "none",
+                                                  "state")))
+
+samp_df <- data.frame(file_name_full=list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = FALSE)) %>%
+    filter(!grepl("Don't USE",file_name_full)) %>%
+    # mutate(batch = strsplit(file_name_full, split = "/")[[1]][1]) %>%
+    tidyr::separate_wider_delim(file_name_full, delim = "/", names = c("batch", "sample_type", "file_name")) %>%
+    rowwise() %>% 
+    mutate(pat_id = ifelse(sample_type == "HC229" & batch == "Debarcoded fcs1",
+                         paste0(strsplit(file_name, split="_")[[1]][2:3], collapse="_"),
+                    ifelse(sample_type == "HC229" | sample_type == "HC233",
+                         paste0(strsplit(file_name, split="_")[[1]][4:5], collapse="_"),
+                         paste0(strsplit(file_name, split="_")[[1]][1:2], collapse="_")))) %>%
+    ungroup()
+
+samp_df <- samp_df[grepl("2024", samp_df$batch),]
+
+# saveRDS(
+#     lapply(mg_list[5:9], function(dat) {
+#         dat$cell_type_df_full %>%
+#             left_join(samp_df,
+#                     by=c("fcs_name"="file_name"))
+#                     }) %>%
+#         bind_rows(),
+#     file=file.path(data_folder, "data/cell_type_full_df_b4_2024.RDS")
+# )
+
+all_cells_df <- readRDS(file.path(data_folder, "data/cell_type_full_df_b4_2024.RDS"))
+
+all_cells_df_filt <- all_cells_df[grepl("2024", all_cells_df$batch),]
+
+# Convert to SingleCellExperiment
+sce <- prepData(x=fcs_raw, 
+                panel=fcs_panel,
+                md=samp_df,
+                cofactor = 5,
+                panel_cols = list(channel="name",
+                                  antigen="desc"),
+                md_cols = list(file="file_name",
+                               id="pat_id",
+                               factors=c("sample_type", "file_name"))
+)
+
+sce <- sce[,sce$file_name != "HC233_CD45_108_LCH_005_d30_d90_d180_concat_1.fcs"]
+sce <- sce[,sce$file_name != "HC233_CD45_108_PCH_005_d30_d90_d180_concat_1.fcs"]
+
+all_cells_df_filt <- all_cells_df_filt[all_cells_df_filt$fcs_name != "HC233_CD45_108_PCH_005_d30_d90_d180_concat_1.fcs",]
+
+# Edit colData
+colData <- colData(sce)
+colData$file_name <- as.character(colData$file_name)
+
+### Join wsp cell types ----------------------------------
+colData$mg_cell_path <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df_filt %>%
+              select(cell_index, fcs_name, mg_cell_path),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  dplyr::pull(mg_cell_path)
+
+# Add batch information, taken from the workspace name
+colData$batch <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df_filt %>%
+              select(cell_index, fcs_name, wsp_name),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  pull(wsp_name) %>%
+  readr::parse_number()
+
+# Add indexes for cells
+colData$cell_index <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+    pull(cell_index)
+
+colData(sce) <- colData
+
+# Things to switch out (Current to New)
+# 209Bi_Tbet to 209Bi_Cd11b
+# 146Nd_CD8a to 115In_CD8a
+# 147Sm_CD45RO to 152Gd_CD45RO
+# 155Gd_EOMES to 146Nd_EOMES
+# 153Eu_CD185_CXCR5 to 147Sm_CD185_CXCR5
+# Remove TCR Va7.2 from the 2022 SCE
+# 153Gd_CD66b to 153Eu_CD66b <- this one is probably not important since it's removed anyway
+
+# Switch the values for "164Dy_CD86_biotin" "175Lu_CD279_PD1" for batch 2
+# sce_exprs_new = assay(sce, "exprs")
+# sce_exprs_new[c(which(rownames(sce)=="156Gd_CD279_PD1"), which(rownames(sce)=="175Lu_PE")), which(colData$batch==2)] <-
+#     sce_exprs_new[c(which(rownames(sce)=="175Lu_PE"), which(rownames(sce)=="156Gd_CD279_PD1")), which(colData$batch==2)]
+# 
+# assay(sce, "exprs") <- sce_exprs_new
+
+saveRDS(sce,
+        file=file.path(data_folder, "data/sce_b4_2024.rds"))
+```
+
+
+```{r, eval=FALSE}
+#' ==================================================
+#' Read in data
+#' --------------------------------------------------
+fcsFiles <- list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = TRUE) %>%
+    .[!grepl("Don't USE",.)]
+
+fcsFiles <- fcsFiles[!grepl("2024", fcsFiles)]
+
+fcs_raw <- read.flowSet(fcsFiles, 
+                        transformation = FALSE, 
+                        truncate_max_range = FALSE)#,
+                        # column.pattern = "SampleID", # Remove sample ID as only some have it
+                        # invert.pattern = TRUE)
+
+fcsFiles <- list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = TRUE) %>%
+    .[!grepl("Don't USE",.)]
+
+fcsFiles <- fcsFiles[grepl("2024", fcsFiles)]
+
+fcs_raw1 <- read.flowSet(fcsFiles, 
+                        transformation = FALSE, 
+                        truncate_max_range = FALSE)#,
+                        # column.pattern = "SampleID", # Remove sample ID as only some have it
+                        # invert.pattern = TRUE)
+
+
+### Get marker information ----------------------------------
+# pregating_channels <- c("Bead", "DNA1", "DNA2", "Dead", "Cell_length")
+lineage_channels <- c("CD11c","CD56",
+                      "CD8a",#"CD8A",
+                      "CD57","CD27","CD19","CD45RA",
+                      "CD4","KLRG1","CD45RO","CD31",
+                      "CD194_CCR4",#"CD194 (CCR4)",
+                      "CD197_CCR7",#"CD197 (CCR7)",
+                      "CD14","APC","CD16","IgD","Ki67",
+                      "CD25","CD3","CD38",
+                      "IntB7",#"integrin beta7",
+                      "CD127")
+
+# Base the panel off the batch 1 .fcs
+fcs_panel <- pData(parameters(fcs_raw1[[which(fcsFiles == "/dskh/nobackup/alexq/nadav/data/Debarcoded fcs1 2024/HC233/HC233_CD45_108_CHW_001_d90_180.fcs")]])) %>%
+  select(name, desc) %>%
+    mutate(marker = gsub("^[^_]+_", "", desc)) %>%
+    mutate(marker_class = ifelse(marker %in% lineage_channels,
+                                "type", ifelse(is.na(marker),
+                                                  "none",
+                                                  "state")))
+
+fcs_panel_2022 <- pData(parameters(fcs_raw[[which(fcsFiles == "/dskh/nobackup/alexq/nadav/data/Debarcoded fcs1/HC229/HC299_CHW_002_d180_CD45_104.fcs")]])) %>%
+  select(name, desc) %>%
+    mutate(marker = gsub("^[^_]+_", "", desc)) %>%
+    mutate(marker_class = ifelse(marker %in% lineage_channels,
+                                "type", ifelse(is.na(marker),
+                                                  "none",
+                                                  "state")))
+
+
+fcspanel_2022 <- read.csv("fcs_panel_2022.csv")
+fcspanel_2024 <- read.csv("fcs_panel_2024.csv")
+
+comp_fcs_panel <- full_join(fcspanel_2022, fcspanel_2024, by = c("marker", "name", "desc", "marker_class"))
+
+
+full_join(fcs_panel, fcs_panel_2022, by = c("marker", "name", "desc", "marker_class")) |> View()
+
+
+### Get sample information ----------------------------------
+### Read in flow data
+
+
+
+samp_df <- data.frame(file_name_full=list.files(file.path(data_folder, "data"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = FALSE)) %>%
+    filter(!grepl("Don't USE",file_name_full)) %>%
+    # mutate(batch = strsplit(file_name_full, split = "/")[[1]][1]) %>%
+    tidyr::separate_wider_delim(file_name_full, delim = "/", names = c("batch", "sample_type", "file_name")) %>%
+    rowwise() %>% 
+    mutate(pat_id = ifelse(sample_type == "HC229" & batch == "Debarcoded fcs1",
+                         paste0(strsplit(file_name, split="_")[[1]][2:3], collapse="_"),
+                    ifelse(sample_type == "HC229" | sample_type == "HC233",
+                         paste0(strsplit(file_name, split="_")[[1]][4:5], collapse="_"),
+                         paste0(strsplit(file_name, split="_")[[1]][1:2], collapse="_")))) %>%
+    ungroup()
+
+samp_df$pat_id[samp_df$pat_id == "TeT_positive"] <- "JE_010"
+
+
+### Checks to make mg_list and samp_df match up
+
+# check <- lapply(mg_list, function(dat) {
+#   unique(dat$cell_type_df_full$fcs_name)
+# })
+# 
+# duplicated(check) |> which()
+# 
+# check <- unlist(check)
+# check <- unique(check)
+# 
+# setdiff(samp_df$file_name, check)
+# setdiff(check, samp_df$file_name)
+
+saveRDS(
+    lapply(mg_list, function(dat) {
+        dat$cell_type_df_full %>%
+            left_join(samp_df,
+                    by=c("fcs_name"="file_name"))
+                    }) %>%
+        bind_rows(),
+    file=file.path(data_folder, "data/cell_type_full_df_b4.RDS")
+)
+
+all_cells_df <- readRDS(file.path(data_folder, "data/cell_type_full_df_b4.RDS"))
+
+# Convert to SingleCellExperiment
+sce <- prepData(x=fcs_raw, 
+                panel=fcs_panel,
+                md=samp_df,
+                cofactor = 5,
+                panel_cols = list(channel="name",
+                                  antigen="desc"),
+                md_cols = list(file="file_name",
+                               id="pat_id",
+                               factors=c("sample_type", "file_name"))
+)
+
+# Edit colData
+colData <- colData(sce)
+colData$file_name <- as.character(colData$file_name)
+
+### Join wsp cell types ----------------------------------
+colData$mg_cell_path <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df %>%
+              select(cell_index, fcs_name, mg_cell_path),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  dplyr::pull(mg_cell_path)
+
+# Add batch information, taken from the workspace name
+colData$batch <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df %>%
+              select(cell_index, fcs_name, wsp_name),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  pull(wsp_name) %>%
+  readr::parse_number()
+
+# Add indexes for cells
+colData$cell_index <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+    pull(cell_index)
+
+colData(sce) <- colData
+
+# Switch the values for "156Gd_PE" "175Lu_CD279_PD1" for batch 2
+sce_exprs_new = assay(sce, "exprs")
+sce_exprs_new[c(which(rownames(sce)=="156Gd_CD279_PD1"), which(rownames(sce)=="175Lu_PE")), which(colData$batch==2)] <-
+    sce_exprs_new[c(which(rownames(sce)=="175Lu_PE"), which(rownames(sce)=="156Gd_CD279_PD1")), which(colData$batch==2)]
+
+assay(sce, "exprs") <- sce_exprs_new
+
+saveRDS(sce,
+        file=file.path(data_folder, "data/sce_b4.rds"))
+```
+
+# Merging SCEs
+
+```{r, eval = FALSE}
+# Things to switch out (Current to New)
+# 209Bi_Tbet to 209Bi_Cd11b
+# 146Nd_CD8a to 115In_CD8a
+# 147Sm_CD45RO to 152Gd_CD45RO
+# 155Gd_EOMES to 146Nd_EOMES
+# 153Eu_CD185_CXCR5 to 147Sm_CD185_CXCR5
+# Remove TCR Va7.2 from the 2022 SCE
+# 153Gd_CD66b to 153Eu_CD66b <- this one is probably not important since it's removed anyway
+
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "209Bi_Tbet"] <- "209Bi_CD11b"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "146Nd_CD8a"] <- "115In_CD8a"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "147Sm_CD45RO"] <- "152Gd_CD45RO"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "155Gd_EOMES"] <- "146Nd_EOMES"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "153Eu_CD185_CXCR5"] <- "147Sm_CD185_CXCR5"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "152Gd_CD66b"] <- "153Eu_CD66b"
+
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "161Dy_HLADR_APC"] <- "161Dy_APC"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "164Er_CD86_Biotin"] <- "164Dy_CD86_biotin"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "115In_CD31"] <- "155Gd_CD31"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "171Yb_GranzymeB"] <- "171Yb_Granzyme_B"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "173Yb_IntegrinB7"] <- "173Yb_IntB7"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "149Sm_CD366_Tim3"] <- "149Sm_CD366_TIM3"
+rownames(sce_b4_2024)[rownames(sce_b4_2024) == "175Lu__PE"] <- "175Lu_PE"
+
+# idx <- order(rownames(sce_b4_2024))
+# sce_b4_2024 <- sce_b4_2024[idx,]
+# 
+# idx <- order(rownames(sce_b4))
+# sce_b4 <- sce_b4[idx,]
+
+markers2022 <- rownames(sce_b4)[grepl("_", rownames(sce_b4))]
+markers2024 <- rownames(sce_b4_2024)[grepl("_", rownames(sce_b4_2024))]
+# markers2022 <- c(markers2022, paste0("tmp"))
+
+data.frame(markers2022, markers2024) |> View()
+
+markers2022 <- markers2022[!markers2022 %in% c("104Pd_CD45_104", "154Gd_CD45_154", "144Nd_FITC_TCR_VB7.1", "162Er_TCR_VB21.3", "167Er_TCR_Va7.2", "174Yb_TCR_VB13.1", "175Lu_PE")]
+
+markers2024 <- markers2024[!markers2024 %in% c("167Er__FITC", "175Lu_PE", "144Nd_TCRgd")]
+
+sce_b4 <- sce_b4[rownames(sce_b4) %in% markers2022]
+sce_b4_2024 <- sce_b4_2024[rownames(sce_b4_2024) %in% markers2024]
+
+sce_b4_2024$batch <- sce_b4_2024$batch + 4
+
+rData_2022 <- rowData(sce_b4) |> as.data.frame()
+rData_2024 <- rowData(sce_b4_2024) %>% 
+  as.data.frame() %>%
+  mutate(marker_name = rownames(.)) %>%
+  left_join(rData_2022, by = "marker_name") %>%
+  select(c(channel_name.y, marker_name, marker_class.y))
+colnames(rData_2024) <- colnames(rData_2022)
+rownames(rData_2024) <- rData_2024$marker_name
+
+rowData(sce_b4_2024) <- DataFrame(rData_2024)
+
+ref <- rownames(sce_b4)
+sce_b4_2024 <- sce_b4_2024[ref,]
+
+sce <- cbind(sce_b4, sce_b4_2024)
+saveRDS(sce,
+        file=file.path(data_folder, "data/sce_complete.rds"))
+```
+
+
+```{r, eval=FALSE}
+#' ==================================================
+#' Read in data - MHA
+#' --------------------------------------------------
+fcsFiles <- list.files(file.path("/dskh/nobackup/alexq/nadav/mha_data/MHA_IVoCC_002"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = TRUE) %>%
+  .[!grepl("Don't USE",.)]
+
+fcs_raw2 <- read.flowSet(fcsFiles, 
+                        transformation = FALSE, 
+                        truncate_max_range = FALSE)
+
+
+### Get marker information ----------------------------------
+lineage_channels <- c("CD11c","CD56",
+                      "CD8a",#"CD8A",
+                      "CD57","CD27","CD19","CD45RA",
+                      "CD4","KLRG1","CD45RO","CD31",
+                      "CD194_CCR4",#"CD194 (CCR4)",
+                      "CD197_CCR7",#"CD197 (CCR7)",
+                      "CD14","APC","CD16","IgD","Ki67",
+                      "CD25","CD3","CD38",
+                      "IntB7",#"integrin beta7",
+                      "CD127")
+
+# Base the panel off the batch 1 .fcs
+fcs_panel3 <- pData(parameters(fcs_raw2[[which(fcsFiles == "/dskh/nobackup/alexq/nadav/mha_data/MHA_IVoCC_002/FCS/MHA_002_BMT_CD45_154.fcs")]])) %>%
+  select(name, desc) %>%
+    mutate(marker = gsub("^[^_]+_", "", desc)) %>%
+    mutate(marker_class = ifelse(marker %in% lineage_channels,
+                                "type", ifelse(is.na(marker),
+                                                  "none",
+                                                  "state")))
+
+### Get sample information ----------------------------------
+### Read in flow data
+samp_df <- data.frame(file_name_full=list.files(file.path("/dskh/nobackup/alexq/nadav/mha_data/MHA_IVoCC_002"),
+                       pattern=".fcs",
+                       recursive = TRUE,
+                       full.names = FALSE)) %>%
+    filter(!grepl("Don't USE",file_name_full)) %>%
+    mutate(file_name_full = gsub("FCS\\/", 
+                                 "", file_name_full)) %>%
+    mutate(sample_type = "Samples",
+           file_name = gsub( ".*\\/", "", file_name_full )) %>%
+    rowwise() %>% 
+    mutate(pat_id = ifelse(sample_type == "HC229",
+                         paste0(strsplit(file_name, split="_")[[1]][2:3], collapse="_"),
+                         paste0(strsplit(file_name, split="_")[[1]][1:2], collapse="_"))) %>%
+    ungroup()
+
+saveRDS(
+    mg_list_mha$cell_type_df_full %>%
+            left_join(samp_df,
+                    by=c("fcs_name"="file_name")),
+    file=file.path(data_folder, "data/cell_type_full_df_mha.RDS")
+)
+
+all_cells_df_mha <- readRDS(file.path(data_folder, "data/cell_type_full_df_mha.RDS"))
+
+# Convert to SingleCellExperiment
+sce_mha <- prepData(x=fcs_raw, 
+                panel=fcs_panel,
+                md=samp_df,
+                cofactor = 5,
+                panel_cols = list(channel="name",
+                                  antigen="desc"),
+                md_cols = list(file="file_name",
+                               id="pat_id",
+                               factors=c("sample_type", "file_name"))
+)
+
+# Edit colData
+colData <- colData(sce_mha)
+colData$file_name <- as.character(colData$file_name)
+
+### Join wsp cell types ----------------------------------
+colData$mg_cell_path <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df_mha %>%
+              select(cell_index, fcs_name, mg_cell_path),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  dplyr::pull(mg_cell_path)
+
+# Add batch information, taken from the workspace name
+colData$batch <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+  left_join(all_cells_df_mha %>%
+              select(cell_index, fcs_name, wsp_name),
+            by=c("cell_index"="cell_index",
+                 "file_name"="fcs_name")) %>%
+  pull(wsp_name) %>%
+  readr::parse_number()
+
+# Add indexes for cells
+colData$cell_index <- colData %>%
+  as.data.frame() %>%
+  group_by(file_name) %>%
+  mutate(cell_index=1:n()) %>%
+    pull(cell_index)
+
+colData(sce_mha) <- colData
+# 
+saveRDS(sce_mha,
+        file=file.path(data_folder, "data/sce_mha.rds"))
+```
+
+# Analysis
+
+```{r}
+# Load sce
+sce <- readRDS(file.path(data_folder, "data/sce_complete.rds"))
+
+sce_mha <- readRDS(file.path(data_folder, "data/sce_mha.rds"))
+```
+
+
+```{r}
+# Load cell type information for each cell
+all_cells_df <- readRDS(file.path(data_folder, "data/cell_type_full_df_b4.RDS"))
+
+all_cells_df_mha <- readRDS(file.path(data_folder, "data/cell_type_full_df_mha.RDS"))
+
+all_cells_df_comb <- bind_rows(
+    all_cells_df,
+    all_cells_df_mha
+)
+```
+
+
+<!-- ```{r fig.height=4, fig.width=6, eval=F} -->
+<!-- # Code for plotting cell type proportions -->
+<!-- cell_type_prop_df <- all_cells_df %>% -->
+<!--     group_by(fcs_name, sample_type, dpt, pat_id) %>% -->
+<!--     select(-wsp_name, -file_name_full, -mg_cell_path) %>% -->
+<!--     summarise_at(vars(-c("cell_index", "root")), -->
+<!--                  function(col) sum(col)/n()) -->
+
+<!-- pop_names <- cell_type_prop_df %>% -->
+<!--     ungroup() %>%  -->
+<!--     select(-c(fcs_name, sample_type, dpt, pat_id)) %>% -->
+<!--     colnames() %>% -->
+<!--     .[1:10] -->
+
+<!-- tooltip_css <- "border-style: solid; border-color: #c3c3c3; border-radius: 8px; border-width: 0.5px; padding: 5px; box-shadow: 2px 2px 3px 0px #bbbbbb; background-color: white; font: menu;" -->
+
+<!-- plot_list <- lapply( -->
+<!--     pop_names, -->
+<!--     function(pop) { -->
+<!--         p <- cell_type_prop_df %>% -->
+<!--             ungroup() %>% -->
+<!--             select(dpt, pat_id, sample_type, all_of(pop)) %>% -->
+<!--             filter(sample_type == "Samples") %>% -->
+<!--             arrange(dpt) %>% -->
+<!--             mutate(ind = 1:n()) %>% -->
+<!--             ggplot() + -->
+<!--             aes(x=dpt, y=get(pop), col=pat_id, -->
+<!--                 data_id=pat_id, -->
+<!--                 tooltip = paste0("<b>Pat ID</b>: ", `pat_id`, "\n",  -->
+<!--                                 "<b>Pop</b>: ", pop, "\n", -->
+<!--                                 "<b>prop.</b>: ", signif(get(pop), 3))) + -->
+<!--             geom_path_interactive(aes(group=pat_id)) +  -->
+<!--             geom_point_interactive() + -->
+<!--             labs(y=pop, title=pop) + -->
+<!--             theme_bw() -->
+
+<!--         girafe( -->
+<!--             ggobj=p, -->
+<!--             height_svg=4, -->
+<!--             width_svg=6, -->
+<!--             options = list( -->
+<!--                 opts_hover(css = "stroke-width:3; stroke:gold;"), -->
+<!--                 opts_tooltip(css = tooltip_css) -->
+<!--                 ) -->
+<!--             ) -->
+<!--     } -->
+<!-- ) %>% -->
+<!--     `names<-`(pop_names) -->
+
+<!-- for (pop in pop_names[1:10]) { -->
+<!--     print(plot_list[[pop]]) -->
+<!-- } -->
+
+<!-- plot_list[["/CD3+/non-NK T cells/CD8/CD8+ RO+/Integrin B7+"]] -->
+<!-- ``` -->
+
+
+```{r}
+# Checking if the file names in all_cells_df are in the sce
+dif <- setdiff(unique(all_cells_df$fcs_name), unique(sce$file_name))
+
+all_cells_df <- all_cells_df |>
+  filter(!fcs_name %in% dif)
+
+dif <- setdiff(unique(sce$file_name), unique(all_cells_df$fcs_name))
+sce <- sce[,sce$file_name != dif]
+
+
+```
+
+
+
+## MEM Analysis
+
+<!-- ```{r} -->
+
+<!-- all_cells_df$dpt <- rep(1000, nrow(all_cells_df)) -->
+
+<!-- #' Load data from Nadav's Excel -->
+<!-- #' -------------------- -->
+<!-- nadav_panel_marker <- read_xlsx(file.path(data_folder, "data/Nadav_Panel.xlsx"), -->
+<!--                          sheet="Relevant Markers") %>% -->
+<!--     filter(!is.na(Comments)) -->
+
+<!-- nadav_panel_marker_mha <- read_xlsx(file.path(data_folder, "data/Nadav_Panel.xlsx"), -->
+<!--                          sheet="Relevant Markers MHA_002") %>% -->
+<!--     filter(!is.na(Comments)) -->
+
+<!-- nadav_tcrvb <- read_xlsx(file.path(data_folder, "data/Nadav_Panel.xlsx"), -->
+<!--                          sheet="TCRVB CyTOF batches", -->
+<!--                          skip=1) %>% -->
+<!--     select(-contains("...")) %>% -->
+<!--     rename("fcs_name"="fcs name") -->
+
+<!-- nadav_tcrvb_long <- nadav_tcrvb %>% -->
+<!--     pivot_longer(cols=!c("#","fcs_name", "Samples", "DPT", "Batch", "channel", "CMV Tetramer A02:01", -->
+<!--                          "Patient ID"),  -->
+<!--                 names_to="name", values_to="val") -->
+
+<!-- nadav_tcrvb_filt <- nadav_tcrvb_long %>%  -->
+<!--     filter(grepl("yes", val)) %>% -->
+<!--     rowwise() %>%  -->
+<!--     mutate(sample_id = strsplit(Samples, split=" ")[[1]][1], -->
+<!--            dpt = DPT, -->
+<!--            batch=Batch) %>% -->
+<!--            # dpt = gsub("d", "", strsplit(Samples, split=" ")[[1]][2])) %>% -->
+<!--     mutate(sample_id = gsub("P2-|P1-", "", sample_id) %>%  -->
+<!--         gsub("-", "_", .)) %>% -->
+<!--     ungroup() %>%  -->
+<!--     distinct(fcs_name, sample_id, `Patient ID`, -->
+<!--              name, dpt, batch) %>% -->
+<!--     mutate(sample_id = gsub("CHW_","", sample_id) %>% -->
+<!--                gsub("IVoCC_", "", .)) %>% -->
+<!--     rowwise() %>% -->
+<!--     mutate(sample_id = strsplit(sample_id, split="_")[[1]] %>% -->
+<!--                .[1:2] %>% -->
+<!--                paste0(., collapse="_")) %>% -->
+<!--     ungroup() -->
+
+<!-- # Filtered vbetas -->
+<!-- nadav_tcrvb_filt %>% -->
+<!--     create_dt() -->
+
+<!-- # Select patients with vbetas and fcs data -->
+<!-- vbeta_fcs <- intersect( -->
+<!--     nadav_tcrvb_filt %>% distinct(fcs_name) %>% pull(),  -->
+<!--     all_cells_df_comb %>% distinct(fcs_name) %>% pull()) -->
+<!-- ``` -->
+
+```{r}
+
+all_cells_df$dpt <- rep(1000, nrow(all_cells_df))
+
+#' Load data from Nadav's Excel
+#' --------------------
+nadav_panel_marker <- read_xlsx(file.path(data_folder, "data/Nadav_Panel_2024.xlsx"),
+                         sheet="Relevant Markers") %>%
+    filter(!is.na(Comments))
+
+nadav_panel_marker_mha <- read_xlsx(file.path(data_folder, "data/Nadav_Panel_2024.xlsx"),
+                         sheet="Relevant Markers MHA_002") %>%
+    filter(!is.na(Comments))
+
+nadav_tcrvb <- read_xlsx(file.path(data_folder, "data/Nadav_Panel_2024.xlsx"),
+                         sheet="TCRVB CyTOF batches",
+                         skip=1) %>%
+    select(-contains("...")) %>%
+    rename("fcs_name"="fcs name")
+
+nadav_tcrvb_long <- nadav_tcrvb %>%
+    pivot_longer(cols=!c("#","fcs_name", "Samples", "DPT", "Batch", "channel", "CMV Tetramer A02:01",
+                         "Patient ID"), 
+                names_to="name", values_to="val")
+
+nadav_tcrvb_filt <- nadav_tcrvb_long %>% 
+    filter(grepl("yes", val)) %>%
+    rowwise() %>% 
+    mutate(sample_id = strsplit(Samples, split=" ")[[1]][1],
+           dpt = DPT,
+           batch=Batch) %>%
+           # dpt = gsub("d", "", strsplit(Samples, split=" ")[[1]][2])) %>%
+    mutate(sample_id = gsub("P2-|P1-", "", sample_id) %>% 
+        gsub("-", "_", .)) %>%
+    ungroup() %>% 
+    distinct(fcs_name, sample_id, `Patient ID`,
+             name, dpt, batch) %>%
+    mutate(sample_id = gsub("CHW_","", sample_id) %>%
+               gsub("IVoCC_", "", .)) %>%
+    rowwise() %>%
+    mutate(sample_id = strsplit(sample_id, split="_")[[1]] %>%
+               .[1:2] %>%
+               paste0(., collapse="_")) %>%
+    ungroup()
+
+# Filtered vbetas
+nadav_tcrvb_filt %>%
+    create_dt()
+
+nadav_panel_marker <- nadav_panel_marker |>
+  filter(!`FCS name` %in% c("167Er_TCR_Va7.2", "175Lu_PE", "not used in all samples, specific use"))
+
+nadav_tcrvb_filt$batch[nadav_tcrvb_filt$batch == "1_2024"] <- "5"
+nadav_tcrvb_filt$batch[nadav_tcrvb_filt$batch == "2_2024"] <- "6"
+nadav_tcrvb_filt$batch[nadav_tcrvb_filt$batch == "3_2024"] <- "7"
+nadav_tcrvb_filt$batch[nadav_tcrvb_filt$batch == "4_2024"] <- "8"
+nadav_tcrvb_filt$batch[nadav_tcrvb_filt$batch == "5_2024"] <- "9"
+
+# Select patients with vbetas and fcs data
+vbeta_fcs <- intersect(
+    nadav_tcrvb_filt %>% distinct(fcs_name) %>% pull(), 
+    all_cells_df_comb %>% distinct(fcs_name) %>% pull())
+```
+
+
+
+```{r}
+# Implement and run MEM from https://www.nature.com/articles/nmeth.4149
+
+# all_cells_df <- all_cells_df |>
+#   left_join(nadav_tcrvb_filt)
+
+IQR.thresh <- function(MAGpop, MAGref, IQRpop, IQRref, num_markers){
+    #   Use universal IQR threshodling
+    IQR_thresh_pop = matrix()
+    IQR_thresh_ref = matrix()
+    for(i in 1:(num_markers-1)){
+        MAGpop_belowThresh <- MAGpop[,i]<=quantile(MAGpop[,i], na.rm=T)[2]
+        IQR_thresh_pop[i] <- min(IQRpop[,i][MAGpop_belowThresh])
+        MAGref_belowThresh <- MAGref[,i]<=quantile(MAGref[,i], na.rm=T)[2]
+        IQR_thresh_ref[i] <- min(IQRref[,i][MAGref_belowThresh])
+    }
+    IQR_thresh = mean(c(IQR_thresh_pop,IQR_thresh_ref))
+
+    return(IQR_thresh)
+}
+
+plotvBetaMarkerWithinPat <- function(pat_id_val, all_pats=FALSE) {
+    if (!all_pats) {
+        vbeta_pops <- nadav_tcrvb_filt %>%
+            # filter(sample_id %in% pat_id_val) %>%
+            filter(fcs_name %in% pat_id_val) %>%
+            pull(name)
+        
+    } else {
+        vbeta_pops <- unique(nadav_tcrvb_filt$name)
+    }
+
+    vbeta_pop_paths <- colnames(all_cells_df)[
+            grepl(paste0(paste0(vbeta_pops, "$"), collapse="|"), 
+                colnames(all_cells_df)) &
+            grepl("CD3\\+\\/non-NK", 
+                colnames(all_cells_df))]
+
+    # Subset 
+    cd3_cell_ind <- all_cells_df %>%
+        # filter patients with a v beta available
+        {if(all_pats) . else filter(., fcs_name %in% pat_id_val)} %>%
+        # filter CD3+ only
+        filter(`/CD3+/non-NK T cells`) %>%
+        # filter samples only %>%
+        filter(sample_type %in% c("Samples", "Patients")) %>% 
+        # get dpt from sample file 
+        select(-dpt) %>%
+        left_join(
+            nadav_tcrvb_filt %>%
+                {if(all_pats) . else filter(., fcs_name %in% pat_id_val)} %>%
+                distinct(fcs_name, dpt, batch),
+            by="fcs_name"
+        ) %>%
+        # select_if(function(col) sum(is.na(col)) == 0 ) %>%
+        select(any_of(vbeta_pop_paths), mg_cell_path, cell_index, fcs_name,sample_type,dpt, pat_id) %>%
+        left_join(
+            colData(sce) %>% 
+                as.data.frame() %>%
+                mutate(sce_ind = 1:n()) %>%
+                select(#sample_id, #dpt, 
+                       file_name, cell_index, sce_ind) ,
+            by=c(#"pat_id"="sample_id",
+                 # "dpt"="dpt",
+                 "fcs_name"="file_name",
+                 "cell_index"="cell_index")
+        ) %>%
+        select_if(function(col) any(!is.na(col)))
+    
+    trbv_cols <- cd3_cell_ind %>%
+        select(any_of(vbeta_pop_paths)) %>%
+        colnames()
+    
+    pat_cell_df <- cd3_cell_ind %>%
+        bind_cols(
+            t(assay(sce, "exprs")) %>%
+                as.data.frame() %>%
+                select(all_of(nadav_panel_marker$`FCS name`)) %>%
+                `colnames<-`(nadav_panel_marker$name) %>%
+                dplyr::slice(cd3_cell_ind$sce_ind)
+            ) %>%
+        pivot_longer(cols=all_of(trbv_cols),
+                     names_to="pop",
+                     values_to="value") %>%
+        filter(!is.na(value)) %>%
+        mutate(value = ifelse(value, "vbeta", "rest")) %>%
+        select(-c(mg_cell_path, sample_type)) 
+    
+    if (all_pats) {
+        pop_comp_df <- pat_cell_df %>% 
+            distinct(pop)
+        
+        pat_n_cells_df <- pat_cell_df %>% 
+            group_by(pop) %>% 
+            summarise(n_cells=n(), 
+                      n_vbeta = sum(value == "vbeta"),
+                      .groups='drop')
+    } else {
+        pop_comp_df <- pat_cell_df %>% 
+            distinct(pop, fcs_name, dpt, pat_id)  %>%
+            mutate(vbeta_name = sub(".*/", "", pop)) %>%
+            # Filter samples with NA dpt, since they don't have a vbeta listed on Nadavs sheet
+            filter(!is.na(dpt)) %>%
+            # Need to filter only vbeta patient combinations
+            filter(
+                grepl(
+                    #legal vbeta name combinations
+                    nadav_tcrvb_filt %>% 
+                        mutate(match_str = paste(name,sample_id,dpt,sep="_")) %>% 
+                        pull(match_str) %>% 
+                        paste(., collapse="|"),
+                    paste(pop,pat_id,dpt,sep="_")
+                )
+            )
+        
+        pat_n_cells_df <- pat_cell_df %>% 
+            group_by(fcs_name, dpt, pat_id, pop) %>% 
+            summarise(n_cells=n(), 
+                      n_vbeta = sum(value == "vbeta"),
+                      .groups='drop')
+    }
+    
+    num_markers = length(nadav_panel_marker$name)
+    num_pops = nrow(pop_comp_df)
+        
+    MAGpop = matrix(nrow=num_pops,ncol=num_markers)
+    MAGref = matrix(nrow=num_pops,ncol=num_markers)
+    IQRpop = matrix(nrow=num_pops,ncol=num_markers)
+    IQRref = matrix(nrow=num_pops,ncol=num_markers)
+
+    for (i in seq_len(nrow(pop_comp_df))) {
+        if (all_pats) {
+            filt_dat <- pat_cell_df %>% 
+                filter(pop == pop_comp_df$pop[i])
+        } else {
+            filt_dat <- pat_cell_df %>% 
+                filter(fcs_name == pop_comp_df$fcs_name[i] & 
+                           dpt  == pop_comp_df$dpt[i] &
+                           pat_id == pop_comp_df$pat_id[i] & 
+                           pop == pop_comp_df$pop[i])
+        }
+        MAGpop[i,] = filt_dat %>% 
+            filter(value == "vbeta") %>% 
+            select(all_of(nadav_panel_marker$name)) %>% 
+            summarise_all(function(col) median(col, na.rm=TRUE)) %>%
+            t() %>% t()
+        
+        IQRpop[i,] = filt_dat %>% 
+            filter(value == "vbeta") %>% 
+            select(all_of(nadav_panel_marker$name)) %>% 
+            summarise_all(function(col) IQR(col, na.rm=TRUE)) %>%
+            t() %>% t()
+        
+        MAGref[i,] = filt_dat %>% 
+            filter(value == "rest") %>% 
+            select(all_of(nadav_panel_marker$name)) %>% 
+            summarise_all(function(col) median(col, na.rm=TRUE)) %>%
+            t() %>% t()
+        IQRref[i,] = filt_dat %>% 
+            filter(value == "rest") %>% 
+            select(all_of(nadav_panel_marker$name)) %>% 
+            summarise_all(function(col) IQR(col, na.rm=TRUE)) %>%
+            t() %>% t()
+    }
+    
+    # Remove the line where there is NA, probably due to not filtering the 
+    # vbetas for the particular days post
+    remove_ind = which(is.na(rowSums(IQRpop)))
+    if (!identical(remove_ind, integer(0))) {
+        pop_comp_df <- pop_comp_df %>% slice(-remove_ind)
+        MAGpop=MAGpop[-remove_ind,]
+        IQRpop=IQRpop[-remove_ind,]
+        MAGref=MAGref[-remove_ind,]
+        IQRref=IQRref[-remove_ind,]
+    }
+    
+    
+    IQR_thresh <- IQR.thresh(MAGpop,MAGref,IQRpop,IQRref,num_markers) # nolint
+
+    for (i in seq_len(num_markers)){
+        IQRpop[,i] = pmax(IQRpop[,i],IQR_thresh)
+        IQRref[,i] = pmax(IQRref[,i],IQR_thresh)
+    }
+
+    # Calculate MEM scores
+    MAG_diff = MAGpop-MAGref
+    MEM_matrix = abs(MAGpop-MAGref)+(IQRref/IQRpop)-1
+    MEM_matrix[!(MAG_diff>=0)] <- (-MEM_matrix[!(MAG_diff>=0)])
+
+    # Put MEM values on -10 to +10 scale
+    scale_max = max(abs(MEM_matrix[,c(1:ncol(MEM_matrix)-1)]))
+    if (nrow(MEM_matrix) == 1) {
+        MEM_matrix = c((MEM_matrix[,c(1:ncol(MEM_matrix)-1)]/scale_max)*10,MEM_matrix[,ncol(MEM_matrix)]) %>%
+            matrix(nrow=1)
+    } else {
+        MEM_matrix = cbind((MEM_matrix[,c(1:ncol(MEM_matrix)-1)]/scale_max)*10,MEM_matrix[,ncol(MEM_matrix)])
+    }
+
+    colnames(MEM_matrix) <- nadav_panel_marker$name
+    colnames(MAGpop) <- nadav_panel_marker$name
+    
+    pop_mem_df <- pop_comp_df %>%
+        bind_cols(MEM_matrix)%>%
+        {if (all_pats) left_join(
+            ., 
+            pat_n_cells_df,
+            by=c("pop"="pop")) else left_join(
+                .,
+                pat_n_cells_df,
+                by=c("fcs_name"="fcs_name",
+                     "dpt"="dpt",
+                     "pat_id"="pat_id",
+                     "pop"="pop")
+            )}
+    
+    pop_median_df <- pop_comp_df %>%
+        bind_cols(MAGpop) %>%
+        {if (all_pats) left_join(
+            ., 
+            pat_n_cells_df,
+            by=c("pop"="pop")) else left_join(
+                .,
+                pat_n_cells_df,
+                by=c("fcs_name"="fcs_name",
+                     "dpt"="dpt",
+                     "pat_id"="pat_id",
+                     "pop"="pop")
+            )}
+    gc()
+    return(list(pop_mem_df = pop_mem_df,
+                pop_median_df = pop_median_df))
+}
+
+# For Loop instead of lapply
+# Check to see if sample 7 is dramatically bigger than everything else
+
+start_time = Sys.time()
+vbeta_mem_pat_list = lapply(vbeta_fcs[1:5],
+                            function(x) {
+                                print(x) 
+                                return(tryCatch(plotvBetaMarkerWithinPat(x), 
+                                                error=function(e) {
+                                                    message(e)
+                                                    return(NULL)
+                                                }))
+                                })
+
+vbeta_mem_all_list = lapply("",
+                            function(x) plotvBetaMarkerWithinPat(x, 
+                                                                 all_pats=TRUE))
+
+mem_res_df <- lapply(vbeta_mem_pat_list, function(x) x$pop_mem_df) %>%
+    bind_rows() 
+
+mem_res_all_df <- lapply(vbeta_mem_all_list, function(x) x$pop_mem_df) %>%
+    bind_rows() 
+
+vbeta_med_df <- lapply(vbeta_mem_pat_list, function(x) x$pop_median_df) %>%
+    bind_rows()
+
+Sys.time() - start_time
+
+save(
+    mem_res_df,
+    mem_res_all_df,
+    vbeta_med_df,
+    file=file.path(data_folder, "data/mem_res_dat_b4.RData")
+)
+
+```
+
+Heatmap of MEM results
+
+```{r fig.width=12, fig.height=10}
+# load(file.path(data_folder, "data/mem_res_dat_b4.RData"))
+
+suppressPackageStartupMessages({
+    library(ComplexHeatmap)
+    library(circlize)
+})
+
+# MEM results by patient
+#' ------------------------
+col_fun = colorRamp2(c(-10, 0, 10), c("#66a6cc", "#fff8de", "#cc2010"))
+
+tcrvb_filt_vals <- (paste(gsub("^.*/", "", mem_res_df$pop), mem_res_df$fcs_name, sep="_")) %in% 
+               (nadav_tcrvb_filt %>% mutate(str=paste(name,fcs_name,sep="_")) %>% pull(str))
+
+markers_to_plot <- nadav_panel_marker %>%
+    filter(`Position in heatmap` != "Omit") %>%
+    pull(name)
+
+marker_categories <- nadav_panel_marker %>%
+    filter(`Position in heatmap` != "Omit") %>%
+    mutate(Category = factor(Category, levels=unique(Category))) %>%
+    pull(Category)
+
+row_ha = rowAnnotation(
+  df = mem_res_df %>%
+    filter(tcrvb_filt_vals) %>%
+      arrange(pat_id, pop, dpt) %>%
+      select(-all_of(nadav_panel_marker$name)) %>%
+      select(-fcs_name, -starts_with("n_")) %>% 
+      as.data.frame()
+)
+
+
+hm_dat <- mem_res_df %>%
+    # filter only the vbetas that were in Nadav's table 
+    filter(tcrvb_filt_vals) %>%
+    arrange(pat_id, pop, dpt) %>%
+    select(all_of(markers_to_plot)) %>% 
+    # select_if(function(col) length(unique(col)) > 1) %>%
+    as.matrix()
+
+ht_fig1 = Heatmap(
+  hm_dat, 
+  name = "ht_fig1",
+  cluster_rows = FALSE,
+  col = col_fun,
+  column_split = marker_categories,
+  cluster_columns = FALSE,
+  row_split = mem_res_df %>%
+      filter(tcrvb_filt_vals) %>%
+      arrange(pat_id, pop, dpt) %>%
+      pull(pat_id),
+  row_title_gp  = gpar(fontsize = 5.5),
+  column_title_gp  = gpar(fontsize = 8),
+  left_annotation  = row_ha,
+  right_annotation = rowAnnotation(
+      `# Vbeta` = anno_barplot(
+          mem_res_df %>%
+              filter(tcrvb_filt_vals) %>%
+              arrange(pat_id, pop, dpt) %>% 
+              select(n_vbeta) %>%
+              as.matrix(),
+          add_numbers = TRUE,
+          beside = TRUE, attach = TRUE,
+          width = unit(2, "cm")
+      )
+  ),
+  heatmap_legend_param = list(
+    title = "MEM Score"
+    )
+  )
+
+ht_fig1
+
+
+# Median Experssion results by patient
+#' ------------------------
+col_fun = colorRamp2(c(-3, 0, 3), c("#66a6cc", "#fff8de", "#cc2010"))
+
+row_ha = rowAnnotation(
+  df = vbeta_med_df %>%
+      filter(tcrvb_filt_vals) %>%
+      arrange(pat_id, pop, dpt) %>%
+      select(-all_of(nadav_panel_marker$name)) %>%
+      select(-fcs_name, -starts_with("n_")) %>% 
+      as.data.frame()
+)
+
+hm_dat <- vbeta_med_df %>%
+      filter(tcrvb_filt_vals) %>%
+    arrange(pat_id, pop, dpt) %>%
+    select(all_of(markers_to_plot)) %>% 
+    # select_if(function(col) length(unique(col)) > 1) %>%
+    mutate_all(function(col) scale(col)[,1]) %>%
+    as.matrix()
+
+ht_fig2 = Heatmap(
+  hm_dat, 
+  name = "ht_fig1",
+  column_title = "",
+  cluster_rows = FALSE,
+  col = col_fun,
+  column_split = marker_categories,
+  cluster_columns = FALSE,
+  row_split = mem_res_df %>%
+      filter(tcrvb_filt_vals) %>%
+      arrange(pat_id, pop, dpt) %>%
+      pull(pat_id),
+  row_title_gp  = gpar(fontsize = 8),
+  column_title_gp  = gpar(fontsize = 8),
+  left_annotation  = row_ha,
+  right_annotation = rowAnnotation(
+      `# Vbeta` = anno_barplot(
+          vbeta_med_df %>%
+              filter(tcrvb_filt_vals) %>%
+              arrange(pat_id, pop, dpt) %>% 
+              select(n_vbeta) %>%
+              as.matrix(),
+          add_numbers = TRUE,
+          beside = TRUE, attach = TRUE,
+          width = unit(2, "cm")
+      )
+  ),
+  heatmap_legend_param = list(
+    title = "Z-Scores (of median expression)"
+    )
+  )
+
+ht_fig2
+```
+
+```{r fig.width=12, fig.height=7}
+# MEM results over all samples
+#' ------------------------
+col_fun = colorRamp2(c(-10, 0, 10), c("#66a6cc", "#fff8de", "#cc2010"))
+
+row_ha = rowAnnotation(
+  df = mem_res_all_df %>%
+      select(-all_of(nadav_panel_marker$name)) %>%
+      select(-starts_with("n_")) %>%
+      as.data.frame()
+)
+
+hm_dat <- mem_res_all_df %>%
+    select(all_of(markers_to_plot)) %>% 
+    # select_if(function(col) length(unique(col)) > 1) %>%
+    as.matrix()
+
+ht_fig1 = Heatmap(
+  hm_dat, 
+  name = "ht_fig1",
+  column_title = "",
+  cluster_rows = FALSE,
+  col = col_fun,
+  column_split = marker_categories,
+  cluster_columns = FALSE,
+  row_title_gp  = gpar(fontsize = 8),
+  column_title_gp  = gpar(fontsize = 8),
+  left_annotation  = row_ha,
+  right_annotation = rowAnnotation(
+      `# Vbeta` = anno_barplot(
+          mem_res_all_df %>%
+              select(n_vbeta) %>%
+              as.matrix(),
+          add_numbers = TRUE,
+          beside = TRUE, attach = TRUE,
+          width = unit(2, "cm")
+      )
+  ),
+  heatmap_legend_param = list(
+    title = "MEM Score"
+    )
+  )
+
+ht_fig1
+```
+
+## Vbeta vs Rest - Median Exprs
+
+```{r}
+all_cells_df_comb$dpt <- rep(1000, nrow(all_cells_df_comb))
+
+#' Compute median expression values for all vbeta / rest combinations
+#' ---------------
+
+all_pats=TRUE
+
+if (!all_pats) {
+    vbeta_pops <- nadav_tcrvb_filt %>%
+        # filter(sample_id %in% pat_id_val) %>%
+        filter(fcs_name %in% pat_id_val) %>%
+        pull(name)
+    
+} else {
+    vbeta_pops <- unique(nadav_tcrvb_filt$name)
+}
+
+vbeta_pop_paths <- colnames(all_cells_df_comb)[
+    grepl(paste0(paste0(vbeta_pops, "$"), collapse="|"), 
+          colnames(all_cells_df_comb)) &
+        grepl("CD3\\+\\/non-NK", 
+              colnames(all_cells_df_comb))]
+
+# Subset 
+cd3_cell_ind <- all_cells_df_comb %>%
+    # filter patients with a v beta available
+    {if(all_pats) . else filter(., fcs_name %in% pat_id_val)} %>%
+    # filter CD3+56- only
+    filter(`/CD3+/non-NK T cells`) %>%
+    # filter samples only %>%
+    filter(sample_type %in% c("Samples", "Patients")) %>% 
+    # get dpt from sample file 
+    select(-dpt) %>%
+    left_join(
+        nadav_tcrvb_filt %>%
+            {if(all_pats) . else filter(., fcs_name %in% pat_id_val)} %>%
+            distinct(fcs_name, dpt, batch),
+        by="fcs_name"
+    ) %>%
+    # select_if(function(col) sum(is.na(col)) == 0 ) %>%
+    select(any_of(vbeta_pop_paths), mg_cell_path, cell_index, fcs_name,sample_type, dpt, pat_id) %>%
+    left_join(
+        colData(sce) %>% 
+            as.data.frame() %>%
+            bind_rows(
+                colData(sce_mha) %>% 
+                    as.data.frame()
+            ) %>%
+            mutate(sce_ind = 1:n()) %>%
+            select(#sample_id, #dpt, 
+                file_name, cell_index, sce_ind) ,
+        by=c(#"pat_id"="sample_id",
+            # "dpt"="dpt",
+            "fcs_name"="file_name",
+            "cell_index"="cell_index")
+    ) %>%
+    select_if(function(col) any(!is.na(col)))
+
+trbv_cols <- cd3_cell_ind %>%
+    select(any_of(vbeta_pop_paths)) %>%
+    colnames()
+
+pat_cell_df <- cd3_cell_ind %>%
+    bind_cols(
+        t(assay(sce, "exprs")) %>%
+            as.data.frame() %>%
+            select(all_of(nadav_panel_marker$`FCS name`)) %>%
+            `colnames<-`(nadav_panel_marker$name) %>%
+            bind_rows(
+                t(assay(sce_mha, "exprs")) %>%
+                    as.data.frame() %>%
+                    select(all_of(nadav_panel_marker_mha$`FCS name`)) %>%
+                    `colnames<-`(nadav_panel_marker_mha$name)
+            ) %>%
+            dplyr::slice(cd3_cell_ind$sce_ind)
+    ) %>% 
+    pivot_longer(cols=all_of(trbv_cols),
+                 names_to="pop",
+                 values_to="value") %>%
+    filter(!is.na(value)) %>%
+    mutate(value = ifelse(value, "vbeta", "rest")) %>%
+    select(-c(mg_cell_path, sample_type)) 
+
+pop_comp_df <- pat_cell_df %>% 
+    distinct(pop, fcs_name, dpt, pat_id)  %>%
+    mutate(vbeta_name = sub(".*/", "", pop)) %>%
+    # Filter samples with NA dpt, since they don't have a vbeta listed on Nadavs sheet
+    filter(!is.na(dpt)) %>%
+    # Need to filter only vbeta patient combinations
+    filter(
+        grepl(
+            #legal vbeta name combinations
+            nadav_tcrvb_filt %>% 
+                mutate(match_str = paste(name,sample_id,dpt,sep="_")) %>% 
+                pull(match_str) %>% 
+                paste(., collapse="|"),
+            paste(pop,pat_id,dpt,sep="_")
+        )
+    )
+
+pat_n_cells_df <- pat_cell_df %>% 
+    group_by(fcs_name, dpt, pat_id, pop) %>% 
+    summarise(n_cells=n(), 
+              n_vbeta = sum(value == "vbeta"),
+              .groups='drop')
+
+num_markers = length(nadav_panel_marker$name)
+num_pops = nrow(pop_comp_df)
+
+MAGpop = matrix(nrow=num_pops,ncol=num_markers)
+MAGref = matrix(nrow=num_pops,ncol=num_markers)
+IQRpop = matrix(nrow=num_pops,ncol=num_markers)
+IQRref = matrix(nrow=num_pops,ncol=num_markers)
+
+for (i in seq_len(nrow(pop_comp_df))) {
+    filt_dat <- pat_cell_df %>% 
+        filter(fcs_name == pop_comp_df$fcs_name[i] & 
+                   dpt  == pop_comp_df$dpt[i] &
+                   pat_id == pop_comp_df$pat_id[i] & 
+                   pop == pop_comp_df$pop[i])
+
+    MAGpop[i,] = filt_dat %>% 
+        filter(value == "vbeta") %>% 
+        select(all_of(nadav_panel_marker$name)) %>% 
+        summarise_all(function(col) median(col, na.rm=TRUE)) %>%
+        t() %>% t()
+    
+    IQRpop[i,] = filt_dat %>% 
+        filter(value == "vbeta") %>% 
+        select(all_of(nadav_panel_marker$name)) %>% 
+        summarise_all(function(col) IQR(col, na.rm=TRUE)) %>%
+        t() %>% t()
+    
+    MAGref[i,] = filt_dat %>% 
+        filter(value == "rest") %>% 
+        select(all_of(nadav_panel_marker$name)) %>% 
+        summarise_all(function(col) median(col, na.rm=TRUE)) %>%
+        t() %>% t()
+    IQRref[i,] = filt_dat %>% 
+        filter(value == "rest") %>% 
+        select(all_of(nadav_panel_marker$name)) %>% 
+        summarise_all(function(col) IQR(col, na.rm=TRUE)) %>%
+        t() %>% t()
+}
+
+# Remove the line where there is NA, probably due to not filtering the 
+# vbetas for the particular days post
+remove_ind = which(is.na(rowSums(IQRpop)))
+if (!identical(remove_ind, integer(0))) {
+    pop_comp_df <- pop_comp_df %>% slice(-remove_ind)
+    MAGpop=MAGpop[-remove_ind,]
+    IQRpop=IQRpop[-remove_ind,]
+    MAGref=MAGref[-remove_ind,]
+    IQRref=IQRref[-remove_ind,]
+}
+
+
+colnames(MAGref) <- nadav_panel_marker$name
+colnames(MAGpop) <- nadav_panel_marker$name
+
+pop_median_df <- pop_comp_df %>%
+    bind_cols(MAGpop) %>%
+    mutate(cell_type = "vbeta") %>%
+    bind_rows(
+        pop_comp_df %>%
+            bind_cols(MAGref) %>%
+            mutate(cell_type = "rest")
+    ) %>%
+    left_join(
+        .,
+        pat_n_cells_df,
+        by=c("fcs_name"="fcs_name",
+             "dpt"="dpt",
+             "pat_id"="pat_id",
+             "pop"="pop")
+    )
+
+
+saveRDS(pop_median_df,
+        file=file.path(data_folder, "data/pop_median_df_CD3+56-.rds"))
+```
+
+#### Paired t-test
+
+```{r}
+## tooltip css for interactive plot
+tooltip_css <- "border-style: solid; border-color: #c3c3c3; border-radius: 8px; border-width: 0.5px; padding: 5px; box-shadow: 2px 2px 3px 0px #bbbbbb; background-color: white; font: menu;"
+
+# pop_median_df <- readRDS(file.path(data_folder, "data/pop_median_df_CD3+56-.rds")) %>%
+#     # remove duplicate for CT_023
+#     filter(!(
+#         pop == "/CD3+/non-NK T cells/FITC-/TRBV25-1" &
+#             pat_id == "CT_023"
+#     ))
+
+
+pop_median_df <- pop_median_df %>%
+  filter(!(
+        pop == "/CD3+/non-NK T cells/FITC-/TRBV25-1" &
+            pat_id == "CT_023"
+    ))
+
+# Convert df to long format for graphing
+pop_med_vbeta_rest_df <- pop_median_df %>%
+    left_join(
+        nadav_tcrvb_filt %>%
+            distinct(fcs_name, `Patient ID`),
+        by=c("fcs_name")
+    ) %>%
+    mutate(prop_vbeta = n_vbeta/(n_cells),
+           ratio_vbeta = n_vbeta/(n_cells-n_vbeta)) %>%
+    pivot_longer(cols=nadav_panel_marker$name,
+                 names_to="marker",
+                 values_to="exprs") %>%
+    pivot_wider(names_from="cell_type",
+                values_from="exprs")  %>%
+    # Exclude markers
+    filter(!(marker %in% c("CD11c", "CD14", "CD16", "CD25",
+                           "CD66b", "CD56", "CMV_tetramer", "IgD", 
+                           "CD19", "CD3", "CD86", "TCR Va7.2"))) %>% 
+    filter(dpt > 0) 
+
+pop_med_vbeta_rest_df %>% 
+    select(-c("prop_vbeta","ratio_vbeta")) %>%
+    mutate_if(is.numeric, function(x) round(x,2)) %>%
+    create_dt()
+
+
+# T-test for each vbeta & dpt population
+pop_med_vbeta_rest_ttest <- pop_med_vbeta_rest_df %>%
+    group_by(marker) %>%
+    group_modify( ~ {
+        t.test(.$vbeta,
+               .$rest,
+               alternative = "two.sided",
+               paired = T) %>%
+            tidy()
+    }) %>%
+    ungroup() %>%
+    mutate(p_adj = p.adjust(p.value, method="fdr")) %>%
+    select(marker, estimate, p.value, p_adj)
+
+
+p_med_exprs <- pop_med_vbeta_rest_df %>%
+    # remove uninformative variables
+    filter(!(marker %in% c("CD56"))) %>%
+    ggplot()+
+    aes(x=vbeta,y=rest,
+        fill=dpt,
+        data_id=pat_id,
+        tooltip=sprintf(
+            "<b>Pat ID</b>: %s \n  <b>DPT</b>: %s \n <b>Median Expr (vbeta)</b>: %s \n <b>Median Expr (rest)</b>: %s \n pop: %s",
+            pat_id, dpt, signif(vbeta,3), signif(rest,3), pop))+
+    geom_text(data=pop_med_vbeta_rest_ttest,
+              aes(label=sprintf("p=%s", signif(p_adj,3))),
+              inherit.aes = FALSE,
+              x = -Inf, y = Inf, hjust = -0.1, vjust = 1.4,
+              size=2.5)+
+    geom_point_interactive(alpha=0.75,
+                           colour="gray60",pch=21)+
+    geom_abline(slope=1,linetype="dotted")+
+    facet_wrap(~marker, scales="free")+
+    scale_fill_gradient2(midpoint=90, 
+                         low="yellow", 
+                         mid="#ff006e",
+                         high="#3a86ff", 
+                         breaks=c(30, 90, 180))+
+    # scale_size(range=c(1.5,4))+
+    theme_bw()+
+    labs(title="Median Expression of each non vbeta CD3+ vs vbeta")
+
+ggiraph::girafe(
+    ggobj=p_med_exprs,
+    height_svg = 12,
+    width_svg = 14,
+    options = list(
+        opts_hover(css = "stroke-width:2"),
+        opts_tooltip(css = tooltip_css)
+    )
+)
+```
+
+```{r fig.width=12, fig.height=6.5}
+library(ggpubr)
+library(rstatix)
+library(latex2exp)
+
+sigFunc = function(x){
+  if(x < 0.001){"***"} 
+  else if(x < 0.01){"**"}
+  else if(x < 0.05){"*"}
+    else if (x<0.1){"°"}
+  else{NA}
+}
+
+
+cbp1 <- c("#e69f00", "#56b4e9", "#009e73", "#f0e442",
+          "#cc79a7", "#0072b2", "#d55e00", "#999999",
+          "#f27c7c", "#279a98", "#9a3f44", "#a53093",
+          "#4c5e66")
+
+stat_test_res <- pop_med_vbeta_rest_df %>%
+    # filter(dpt <= 90) %>%
+    pivot_longer(
+        cols = c("vbeta", "rest"),
+        names_to = "cell_group",
+        values_to = "median_expr"
+    ) %>%
+    arrange(pat_id, dpt, pop) %>%
+    group_by(marker) %>%
+    t_test(median_expr ~ cell_group, paired = TRUE) %>%
+    arrange(marker) %>% 
+    adjust_pvalue(method = "fdr") %>%
+    add_significance("p.adj") %>%
+    add_xy_position(x = "marker", fun = "max") %>%
+    rowwise() %>%
+    mutate(signif = sigFunc(p.adj)) %>%
+    ungroup()
+    
+stat_test_res %>% 
+    select(marker, statistic, p, p.adj, signif) %>%
+    mutate_if(is.numeric, function(x) signif(x, 3)) %>%
+    create_dt()
+
+ggboxplot(
+  pop_med_vbeta_rest_df %>%
+    pivot_longer(
+        cols = c("vbeta", "rest"),
+        names_to = "cell_group",
+        values_to = "median_expr"
+    ) %>%
+      mutate(marker=factor(marker, levels=stat_test_res$marker)), 
+  x = "marker", y = "median_expr", 
+  color = "cell_group", 
+  fill = "cell_group",
+  alpha=0.3,
+  palette = c("#00AFBB", "#E7B800")
+  ) + 
+    stat_pvalue_manual(stat_test_res,  label = "signif", tip.length = 0) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+    labs(title="Comparison of median expression of each vbeta/dpt",
+         subtitle="Paired t-test with fdr adjustment")
+
+```
+
+#### Fit Linear Regression models
+
+```{r fig.height=12, fig.width=12}
+pop_med_vbeta_rest_dpt <- pop_med_vbeta_rest_df %>%
+    mutate(vbeta_stage = ifelse(dpt < 30, "early", "late") %>%
+               as.factor()) %>%
+    mutate(deceased = ifelse(pat_id %in% c("MHA_002", "SCH_007", "SCH_002", "LCH_003"),
+                             TRUE,
+                             FALSE)) %>%
+    mutate(pat_id_old = pat_id) %>%
+    mutate(pat_id = sprintf("%s-%s", `Patient ID`,
+                            pat_id)) %>%
+    arrange(`Patient ID`) %>%
+    mutate(pat_id = factor(pat_id,
+                           levels= unique(pat_id)))
+    # filter(n_vbeta > 200)
+
+#' Perform regression over each marker 
+#' -------------
+vbeta_med_dpt_regr_p <- pop_med_vbeta_rest_dpt %>%
+    group_by(marker) %>%  
+    group_modify( ~ {
+        lm(vbeta ~ dpt,
+           data=data.frame(vbeta=.$vbeta, dpt=.$dpt)) %>%
+            tidy()
+    }) %>%
+    ungroup() %>%
+    filter(term=="dpt") %>%
+    mutate(p_value = p.adjust(`p.value`, "fdr")) %>%
+    rename(p_value_unadjusted = "p.value") %>%
+    arrange(p_value)
+
+vbeta_med_dpt_regr_p %>%
+    create_dt()
+```
+
+#### Linear Mixed Model
+
+```{r fig.height=12, fig.width=12}
+#' Perform mixed effects regression over each marker 
+#' -------------
+library(nlme)
+
+vbeta_med_dpt_mixregr_p <- pop_med_vbeta_rest_dpt %>%
+    group_by(marker) %>%  
+    group_modify( ~ {
+        m1 <- lme(
+            vbeta ~ dpt,
+            random =  ~ 1 | pat_id,
+            data = data.frame(
+                vbeta = .$vbeta,
+                dpt = .$dpt,
+                pat_id = .$pat_id
+            ))
+        
+        anova(m1) %>%
+            as.data.frame() %>%
+            mutate(var=rownames(.))
+    }) %>%
+    ungroup()  %>%
+    filter(var == "dpt") %>%
+    mutate(p_value = p.adjust(`p-value`, "fdr")) %>%
+    rename(p_value_unadjusted = "p-value") %>%
+    arrange(p_value)
+
+
+vbeta_med_dpt_mixregr_p %>%
+    create_dt()
+
+lmer_list <- lapply(
+    pop_med_vbeta_rest_dpt %>% distinct(marker) %>% pull(),
+    function(marker_val) {
+        m1 <- lme(
+            vbeta ~ dpt,
+            random =  ~ 1 | pat_id,
+            data = pop_med_vbeta_rest_dpt %>%
+                filter(marker == marker_val))
+        return(m1)
+    }
+) %>%
+    `names<-`(pop_med_vbeta_rest_dpt %>% 
+                  distinct(marker) %>% 
+                  pull())
+
+#' Get coefficients for each patient
+# lmer_df <- lapply(names(lmer_list),
+#                   function(marker_val) {
+#                       coef(lmer_list[[marker_val]]) %>%
+#                           rename(intercept = `(Intercept)`, slope = dpt) %>%
+#                           tibble::rownames_to_column("group") %>%
+#                           mutate(marker = marker_val)
+#                   }) %>%
+#     bind_rows()
+
+lmer_df <- lapply(names(lmer_list),
+                  function(marker_val) {
+                      lmer_list[[marker_val]]$coefficients$fixed %>%  
+                          as.data.frame() %>% 
+                          t() %>% 
+                          as.data.frame() %>% 
+                          rename(intercept = `(Intercept)`, slope = dpt) %>%
+                          mutate(marker = marker_val)
+                  }) %>%
+    bind_rows()
+```
+
+
+```{r fig.height=12, fig.width=12}
+#' Graph Median expression of vbeta over dpt
+#' ---------
+p_med_exprs_dpt_col <- pop_med_vbeta_rest_dpt %>%
+    ggplot() +
+    # geom_abline(
+    #     aes(intercept=intercept,
+    #         slope=slope),
+    #     data=lmer_df,
+    #     linewidth=.5,
+    #     alpha=.4
+    # ) +
+    geom_smooth(
+        aes(
+            x = dpt,
+            y = vbeta,
+            col = as.factor(pat_id),
+            fill = as.factor(pat_id)
+        ),
+        method = "lm",
+        formula = 'y ~ x',
+        linewidth = 0.4,
+        alpha = 0.3,
+        se=FALSE
+    ) +
+    geom_point_interactive(aes(
+        x = dpt,
+        y = vbeta,
+        data_id = pat_id,
+        tooltip = sprintf(
+            "<b>Pat ID</b>: %s \n  <b>DPT</b>: %s \n <b>Median Expr (vbeta)</b>: %s \n <b>vbeta</b>: %s \n <b># cells</b>: %s \n <b># vbeta</b>: %s",
+            pat_id,
+            dpt,
+            signif(vbeta, 3),
+            pop,
+            n_cells,
+            n_vbeta
+        ),
+        col = as.factor(pat_id)
+    ),
+    alpha = 0.75) +
+    geom_text(aes(x=Inf, y=Inf, 
+                  label=TeX(sprintf("$p_{}: %s$",signif(p_value,3)), output = "character")),
+              vjust=1.3, hjust=1.01,
+              parse = TRUE,
+              data=vbeta_med_dpt_mixregr_p %>%
+                  left_join(vbeta_med_dpt_regr_p %>%
+                                rename(p_value_lr = p_value) %>%
+                                select(p_value_lr, marker),
+                            by="marker"),
+              size=3) +
+    facet_wrap(~ marker, scales = "free") +
+    scale_color_manual(
+        values = as.vector(pals::alphabet()),
+        breaks = pop_med_vbeta_rest_dpt %>% distinct(pat_id) %>% pull()
+    ) +
+    scale_fill_manual(
+        values = as.vector(pals::alphabet()),
+        breaks = pop_med_vbeta_rest_dpt %>% distinct(pat_id) %>% pull(),
+        guide = "none"
+    ) +
+    theme_bw() +
+    labs(title = "", 
+         subtitle="",
+         color="Patient ID") 
+
+p_med_exprs_dpt_col
+
+p_med_exprs_dpt_bw <- pop_med_vbeta_rest_dpt %>%
+    ggplot() +
+    geom_abline(
+        aes(intercept=intercept,
+            slope=slope),
+        data=lmer_df,
+        linewidth=.5,
+        alpha=.4
+    ) +
+    # geom_smooth(
+    #     aes(
+    #         x = dpt,
+    #         y = vbeta
+    #     ),
+    #     method = "lm",
+    #     formula = 'y ~ x',
+    #     linewidth = 0.4,
+    #     alpha = 0.3,
+    #     se=FALSE,
+    #     colour="grey50"
+    # ) +
+    geom_point_interactive(aes(
+        x = dpt,
+        y = vbeta,
+        data_id = pat_id,
+        tooltip = sprintf(
+            "<b>Pat ID</b>: %s \n  <b>DPT</b>: %s \n <b>Median Expr (vbeta)</b>: %s \n <b>vbeta</b>: %s \n <b># cells</b>: %s \n <b># vbeta</b>: %s",
+            pat_id,
+            dpt,
+            signif(vbeta, 3),
+            pop,
+            n_cells,
+            n_vbeta
+        )
+    ),
+    alpha = 0.75) +
+    geom_text(aes(x=Inf, y=Inf, 
+                  label=TeX(sprintf("$p_{}: %s$ ",signif(p_value,3)), output = "character")),
+              vjust=1.3, hjust=1.01,
+              parse = TRUE,
+              data=vbeta_med_dpt_mixregr_p %>%
+                  left_join(vbeta_med_dpt_regr_p %>%
+                                rename(p_value_lr = p_value) %>%
+                                select(p_value_lr, marker),
+                            by="marker"),
+              size=3) +
+    facet_wrap(~ marker, scales = "free") +
+    theme_bw() +
+    labs(title = "", 
+         color="Patient ID") 
+
+p_med_exprs_dpt_bw
+
+
+p_med_exprs_dpt_deceased <- pop_med_vbeta_rest_dpt %>%
+    ggplot() +
+    geom_abline(
+        aes(intercept=intercept,
+            slope=slope),
+        data=lmer_df,
+        linewidth=.5,
+        alpha=.4
+    ) +
+    # geom_smooth(
+    #     aes(
+    #         x = dpt,
+    #         y = vbeta
+    #     ),
+    #     method = "lm",
+    #     formula = 'y ~ x',
+    #     linewidth = 0.4,
+    #     alpha = 0.3,
+    #     se=FALSE,
+    #     colour="grey50"
+    # ) +
+    geom_point_interactive(aes(
+        x = dpt,
+        y = vbeta,
+        data_id = pat_id,
+        tooltip = sprintf(
+            "<b>Pat ID</b>: %s \n  <b>DPT</b>: %s \n <b>Median Expr (vbeta)</b>: %s \n <b>vbeta</b>: %s \n <b># cells</b>: %s \n <b># vbeta</b>: %s",
+            pat_id,
+            dpt,
+            signif(vbeta, 3),
+            pop,
+            n_cells,
+            n_vbeta
+        ),
+        shape=deceased,
+        col=deceased
+    ),
+    alpha = 0.75) +
+    geom_text(aes(x=Inf, y=Inf, 
+                  label=TeX(sprintf("$p_{}: %s$ ",signif(p_value,3)), output = "character")),
+              vjust=1.3, hjust=1.01,
+              parse = TRUE,
+              data=vbeta_med_dpt_mixregr_p %>%
+                  left_join(vbeta_med_dpt_regr_p %>%
+                                rename(p_value_lr = p_value) %>%
+                                select(p_value_lr, marker),
+                            by="marker"),
+              size=3) +
+    facet_wrap(~ marker, scales = "free") +
+    scale_color_manual(values=cbp1)+
+    theme_bw() +
+    labs(title = "") 
+
+p_med_exprs_dpt_deceased
+
+ggiraph::girafe(
+    ggobj=p_med_exprs_dpt_col,
+    height_svg = 12,
+    width_svg = 14,
+    options = list(
+        opts_hover(css = "stroke-width:2"),
+        opts_tooltip(css = tooltip_css)
+    )
+)
+
+# Export pdfs
+export_figs <- FALSE
+
+if (export_figs) {
+    pdf.options(width=12, height=12)
+    pdf(file=file.path(data_folder,paste0("figs/med_exprs_dpt_color.pdf")))
+    print(p_med_exprs_dpt_col)
+    dev.off()
+    
+    pdf.options(width=12, height=12)
+    pdf(file=file.path(data_folder,paste0("figs/med_exprs_dpt_bw.pdf")))
+    print(p_med_exprs_dpt_bw)
+    dev.off()
+    
+    pdf.options(width=12, height=12)
+    pdf(file=file.path(data_folder,paste0("figs/med_exprs_dpt_deceased.pdf")))
+    print(p_med_exprs_dpt_deceased)
+    dev.off()
+    
+    pdf.options(width=12, height=12)
+    pdf(file=file.path(data_folder,paste0("figs/med_exprs_vbeta_v_rest.pdf")))
+    print(p_med_exprs)
+    dev.off()
+}
+
+
+```
+

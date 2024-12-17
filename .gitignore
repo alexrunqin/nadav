@@ -1,0 +1,13 @@
+.Rproj.user
+.Rhistory
+.RData
+*.RDS
+.RDataTmp
+.Ruserdata
+
+/data/
+/mha_data/
+/.quarto/
+_freeze/
+docs/
+data/processing/images/
